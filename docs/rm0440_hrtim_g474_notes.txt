@@ -1,0 +1,35 @@
+RM0440 (STM32G4) — HRTIM 与 G474 要点摘录（用于本仓库测试方案）
+来源: RM0440 Rev 9 第 28 章 High-resolution timer（本地由 ST 官方 PDF 抽取）。
+
+1) Master timer 定位（§28.3.5）
+   - 无专用引脚输出；通过各定时单元（TIMA..F）的 set/reset crossbar，用 Master 的
+     PER / CMP1..4 / SYNC / REP 事件去驱动从定时器输出。
+   - MCR 中集中了 Master 与 TIMA..F 的计数使能位，可单写同步启动。
+   - 中断/DMA 源少于从定时器：CMP1..4、repetition、寄存器 update、外部同步。
+
+2) 重复计数器（§28.3.4 “Repetition counter”）
+   - 使能时（TxCEN/MCEN 置位）从 HRTIM_REPxR / MREP 装载内部重复计数器。
+   - 连续模式下每次计数器 roll-over（到 PER 后回 0）或 reset 事件时递减一次。
+   - 当内部值到 0 时产生 REP 中断/DMA（若使能）。
+   - 关键公式：HRTIM_REPxR = 0 → 每个周期一次 REP 事件；若值 > 0，则每
+     (HRTIM_REPxR + 1) 个周期产生一次 REP 事件。
+     因此固定产生 100 个 Master 周期后的一次 REP 中断：写 MREP = 99（全程不改）。
+
+3) Roll-over 与“杂波”风险（§28.3.4）
+   - 若启动时计数初值已大于 PER，或运行中把 PER 改小到小于当前计数且未正确复位，
+     计数器不会在预期点 roll-over，重复计数器也不会递减。
+   - 做法：启动前将 Master（及需同步的从定时器）计数器置于已知初值（通常为 0），
+     写完 MREP/MPER/MCMP 后用软件 update（CR2 的 MSWU 等）锁入活动寄存器，再使能输出与计数器。
+
+4) DLL（产品培训 / RM）
+   - 高分辨率分频依赖 DLL；上电后需校准（连续或单次），轮询 ISR 的 DLLRDY 后再启动波形。
+
+5) 输出级 idle / 无 glitch 启停（§28.3.14 摘录）
+   - 进入 RUN（OEN）前可用 SETx/RSTx 寄存器中的软件强制位预置电平。
+   - 结束时用 ODISR 按通道关闭输出回到 idle，再配合清除 MCEN/TDCEN 等停止计数。
+
+6) NUCLEO-G474RE 参考连脚（与 ST 例程 HRTIM_Basic_PWM_Master 一致）
+   - HRTIM1 TD2 → PB15，AF13（示波器测“随 Master PER/CMP1 的 PWM”）。
+
+7) PDF 链接（官方）
+   https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
