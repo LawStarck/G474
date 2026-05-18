@@ -1,0 +1,58 @@
+HRTIM / STM32G474 — 分步测试计划（每步通过后再进入下一步）
+
+主设计文档（四路 Chirp、CubeMX、初始化、中断边界 — 给 Cursor 用）：
+  docs/hrtim_four_channel_chirp_guide.md
+
+--------------------------------------------------------------------
+步骤 0 — 环境与工程
+  - 在目标板（建议 NUCLEO-G474RE）上建立最小工程：CMSIS 设备头 + 本仓库
+    src/hrtim_master_100wave_test.c，系统时钟与 Cube 例程一致（如 170 MHz）。
+  - 在 stm32g4xx_it.c 的 HRTIM1_Master_IRQHandler 中调用
+    HRTIM_Master100Wave_MasterIrqHandler()。
+
+通过准则：工程可下载运行，无 HardFault。
+
+--------------------------------------------------------------------
+步骤 1 — Master 驱动 TD2 的 100 个完整 PWM 周期（本仓库示例代码）
+  - 固定 MPER、MCMP1、MREP，运行期间不改 cmp/period。
+  - MREP = 99 → 第 (99+1) 次周期边界产生 REP 中断（RM0440 重复计数器说明）。
+  - 启动：DLL 就绪 → 配 Master+TIMD → 软件 update → 强制输出空闲电平 → 再 OEN → 再 MCEN|TDCEN。
+  - 结束：REP ISR 内先 ODIS TD2，再关 MCEN/TDCEN，关 MREPIE。
+
+通过准则：示波器在 PB15 上数到恰好 100 个完整脉冲；启动前沿与停止后无多余窄脉冲
+（允许 MCU 复位/调试器导致的无关瞬态，以“使能序列后第一次边沿”为起点计量）。
+
+--------------------------------------------------------------------
+步骤 2 — 边界与鲁棒性（仍不改 cmp/period）
+  - 重复上电/复位 100 次，统计脉冲个数是否恒为 100。
+  - 变更系统时钟频率（若可行）仅验证编译期常量 MPER 仍满足最小脉宽约束（RM：CMP/PER
+    相对 fHRTIM 有最小间隔要求）。
+
+通过准则：无偶发少脉冲/多脉冲。
+
+--------------------------------------------------------------------
+步骤 3 — 四路 Chirp（500 kHz–1 MHz，100 行表，thread_pulse 一次一段 burst）
+  按 docs/hrtim_four_channel_chirp_guide.md 实施；本文件仅列验收项：
+
+  3.1 同步与漂移
+    - Master 为步进轴时：验证 C/D 边沿相对 Master 周期边界的相位在 100 步内稳定；
+      无不预期的子谐波“滑移”。
+
+  3.2 同 Timer 双路互斥
+    - 在 TC：仅允许 OUT1 或 OUT2 之一为高；TD 同理。
+    - 用示波器两路叠加以及逻辑与验证无重叠高电平窗口。
+
+  3.3 Chirp 单调与换行
+    - 频率单调升或单调降；相邻周期无异常缩短/拉长（除非表意如此）。
+    - preload 更新只在选定 update 边界生效；不在 REP stop ISR 内改 PER/CMP。
+
+  3.4 burst 启停
+    - 每 thread_pulse：四路同时满足 100 个完整周期定义。
+    - burst 尾：优先验证 DMA 或极短 ISR 的 ODIS → 停 CEN 顺序；无额外窄脉冲。
+
+  3.5 资源备选
+    - 方案 A：Master MREPU + MSTU + 各定时器 preload（CPU 填表）。
+    - 方案 B：DMA burst 推寄存器表 + burst 末统一 update。
+    - 方案 C：周期 UPD ISR 推索引（仅中低频或 CPU 富余时）。
+
+通过准则：与 hrtim_four_channel_chirp_guide.md §10 调试条目一致且全部通过。
