@@ -1,8 +1,10 @@
 RM0440 (STM32G4) — HRTIM 与 G474 要点摘录（用于本仓库测试方案）
 来源: RM0440 Rev 9 第 28 章 High-resolution timer（本地由 ST 官方 PDF 抽取）。
 
-【扩展阅读】四路 Chirp / Timer C+D / CubeMX / 中断边界（给 Cursor 的主文档）：
+【扩展阅读】四路 Chirp / CubeMX / 中断边界 — **含 RM0440 自包含摘录（无 PDF 也可实现）**：
   docs/hrtim_four_channel_chirp_guide.md
+  其中「附录 A」抄入了 Table 232、repetition、roll-over、MUDIS、Master 四种 update、
+  crossbar、GTCMP、输出 OEN/ODIS 等原文级条件。
 
 --------------------------------------------------------------------
 1) Master timer 定位（§28.3.5）

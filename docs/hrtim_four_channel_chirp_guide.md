@@ -2,6 +2,8 @@
 
 本文档面向 **RM0440**（STM32G4 HRTIM）与 **STM32CubeG4** 官方例程习惯写法，供本地工程交给 Cursor 做实现与调试。默认器件 **STM32G474**，外设 **HRTIM1**。
 
+**离线 Cursor 说明**：若无法打开 RM0440 PDF，**以本文 §附录 A 为手册细节的完整来源**（数值表、原句级条件、寄存器行为均已抄入）；正文 §2–§8 为工程化归纳，与附录一致。
+
 ---
 
 ## 1. 目标与术语（对齐需求）
@@ -54,9 +56,26 @@ DLL 必须在启动波形前 **校准完成**（轮询 `DLLRDY` 或按 ST LL 例
 
 ### 2.5 PER / CMP 合法区间（“奇怪杂波”的常见根因）
 
-RM0440 对 **PER/CMP** 相对 **fHRTIM** 有 **最小/最大** 约束（手册表格 **Table 232** 一带；并见 “Null duty cycle exception” 章节）。实现 Cursor 时必须把离线算好的 100 组数 **先夹紧到合法区**，否则可能在 **0% / 100% duty**、**CMP 对齐** 附近出现例外边沿。
+RM0440 **Table 232**（Period and compare registers min and max values）给出 **16 位 PER/CMP 可写范围与定时单元预分频 `CKPSC[2:0]` 的关系**（单位：HRTIM 计数 tick，不是秒）：
 
-**经验法则（调试导向）**：在 500 kHz–1 MHz 量级，若 **CKPSC / HR multiply** 选得过粗，有效 tick 数变少，**Ton** 可能逼近最小脉宽 → 单点失败。CubeMX 里 **Timer clock prescaler** 与 **HR mode** 要和你的表一致。
+| `CKPSC[2:0]` | **Min**（PER/CMP 合法下限，除脚注例外） | **Max** |
+|:------------:|:----------------------------------------:|:-------:|
+| 0 | `0x0060` | `0xFFDF` |
+| 1 | `0x0030` | `0xFFEF` |
+| 2 | `0x0018` | `0xFFF7` |
+| 3 | `0x000C` | `0xFFFB` |
+| 4 | `0x0006` | `0xFFFD` |
+| **≥ 5** | `0x0003` | `0xFFFD` |
+
+**脚注（RM 原文要点）**：最小值须 **≥ 3 个 fHRTIM 时钟周期**（表内已按 CKPSC 折成具体十六进制）。**仅** `CMP1`、`CMP3` 可写 **`0x0000`** 用于 **跳过一拍 PWM（null duty）**，且须满足 RM **“Null duty cycle exception case”** 的 set/reset 事件组合条件；其它用法不要用 0 凑合。
+
+**另一条硬规则（RM 原句）**：**若 compare 值大于 period 寄存器值，不会产生 compare match 事件**（输出可能卡死在某电平，看起来像“杂波缺失”）。
+
+**窄脉冲 / HR 限制（RM §28.3.11 后 Null duty 小节）**：**严格小于** “3 个 fHRTIM 周期” 所对应的 **最小十六进制**（随 CKPSC 变化，如 CKPSC=0 时为 `0x60`，CKPSC=1 为 `0x30`，依此类推）在 **普通 compare** 中 **禁止**；HR 对 **窄于 3×tHRTIM** 的脉冲另有优先级规则（见 RM **§28.3.7**）。
+
+**经验法则（调试导向）**：500 kHz–1 MHz 下若 CKPSC 选得 **小**（tick 细），Table 232 的 **Min** 较大，你的 `PER` 若算得太短会 **非法**；若 CKPSC **≥5**，Min 降到 `0x0003`，但 **仍须**满足 **3×tHRTIM** 的脉宽物理约束与 **GTCMP** 模式（附录 A.8）不混用。
+
+更完整的原文级摘录见 **§附录 A.2–A.4**。
 
 ---
 
@@ -100,7 +119,7 @@ RM0440 对 **PER/CMP** 相对 **fHRTIM** 有 **最小/最大** 约束（手册�
 
 ### 4.1 为什么必须谈 preload
 
-HRTIM 大量寄存器为 **preload + active** 双缓冲。RM0440 **Table 244** 归纳 **Master / TIMA..F** 的 **update 源**（软件 `MSWU` / `TxSWU`、**repetition**、**roll-over**、burst DMA 结束等）。
+HRTIM 大量寄存器为 **preload + active** 双缓冲。RM0440 **Table 244** 归纳 **Master / TIMA..F** 的 **update 源**（软件 `MSWU` / `TxSWU`、**repetition**、**roll-over**、burst DMA 结束等）。**Master 的四种 update 选项全文级说明见 §附录 A.5**（含 `MSWU` 会取消挂起硬件 update 的警告）。
 
 **Chirp 第 k→k+1 步**的可靠做法：
 
@@ -239,4 +258,127 @@ HRTIM 大量寄存器为 **preload + active** 双缓冲。RM0440 **Table 244** �
 
 ---
 
-**文档版本**：与工作区 `docs/rm0440_hrtim_g474_notes.txt`、`test_plan/hrtim_phased_tests.txt` 同步演进；若实现与本文冲突，以 **示波器事实 + RM0440** 为准。
+## 附录 A：RM0440 自包含摘录（不打开 PDF 也可实现）
+
+下列文字为 **RM0440 Rev 9 §28.3** 相关条文的 **压缩复述 + 关键原句/数值**，用于本地 Cursor 无法访问 PDF 时的单一事实源。若与 ST 后续修订版冲突，以你安装的 RM 版本为准。
+
+### A.1 Roll-over（连续模式）与“计数不回头”故障
+
+**定义（RM）**：连续模式下，**roll-over** 在计数器 **达到 `HRTIM_PERxR` 后回到 0** 时产生。
+
+**用途列表（RM 原枚举）**：roll-over 可用于：输出 set/reset；**触发 preload→active 的寄存器更新**；IRQ/DMA；burst 时钟/触发；ADC 触发；**递减 repetition counter**。
+
+**关键故障条件（RM 原句）**：
+
+> If the initial counter value is above the period value when the timer is started, or if a new period is set while the counter is already above this value, **the counter is not reset**: it **overflows at the maximum period value** and **the repetition counter does not decrement**.
+
+**工程结论**：启动前 **CNT≤PER** 且已 **软件 update**；Chirp 改 PER 时若可能违反 “新 PER < 当前 CNT”，必须先用 **`MUDIS`/`TxUDIS`** 或 **停计数/强制 reset** 等策略处理，否则 **MREP 计数与波形同时失控**。
+
+### A.2 Repetition counter（TIMA..F 与 Master 同类行为）
+
+**不可读**：内部 repetition **不可读**，只能通过 **`HRTIM_REPxR` / `HRTIM_MREPR`** 预置 reload 值。
+
+**装载时机（RM）**：在 **定时器使能**时（Master 为 **`MCEN`**，从定时器为 **`TxCEN`**），内部 repetition 装入 **`REPxR`/`MREP`**。
+
+**递减条件（RM）**：使能后，**每次**计数器因 **reset 事件** 或 **roll-over** 被清零时，repetition **减 1**。
+
+**到零时（RM）**：内部值为 **0** 时，若使能中断/DMA 使能位（Master：`HRTIM_MDIER` 的 **`MREPIE`**；从定时器：`HRTIM_TIMxDIER` 的 **`REPIE`** / DMA 的 **`REPDE`** 等），则产生 **REP 中断或 DMA**。
+
+**周期计数公式（RM 原句）**：
+
+- 若 **`HRTIM_REPxR = 0`**：**每个周期**都可产生 REP 相关事件（若使能）。
+- 若 **`HRTIM_REPxR > 0`**：每 **`(HRTIM_REPxR + 1)`** 个周期产生一次 REP 事件。
+
+因此 **100 个完整周期后触发一次 REP 事件** → 写 **`REPxR = 99`（或 Master `MREP = 99`）**，且 burst 期间 **不要改写该寄存器**。
+
+**可变频率 / reset 的例外（RM）**：在计数器 **未到达 PER 就被 reset** 的连续或单次模式下，**reset 也会递减 repetition**，但 **“在 `TxCEN` 置位后的第一次启动”** 有单独例外句（详见 RM **Figure 216** 附近）；**SYNCIN 启动的单次模式**另有 “仅第一次 reset 后递减” 的描述。若你未使用这些模式，可忽略；若使用，必须对照 RM 图逐条仿真。
+
+### A.3 Table 232：PER/CMP 最小、最大（再列一次便于检索）
+
+见正文 **§2.5** 表。实现时把 **100 行表**全部映射到当前 **`CKPSC[2:0]`** 行的 **Min/Max** 内。
+
+### A.4 Null duty 与 CMP=0 的合法条件（RM 摘要）
+
+RM 允许 **`CMP1`/`CMP3 = 0`** 作为 **跳过一拍** 的特殊情况，**当且仅当**（RM 条件列表，意译）：
+
+- 输出 **SET** 来自 **PERIOD** 事件；
+- 输出 **RESET** 来自 **compare 1（或 compare 3）**；
+- 该 compare 事件 **仅在本定时单元内**使用，**不**再拿去驱动其它定时单元。
+
+**其它**需要 0% 占空的情形：RM 要求用 **SET/RESET 选同一 compare 值** 且该值 **仍须 ≥ 3×fHRTIM 周期对应的下限**，由 **§28.3.7** 的优先级规则处理。
+
+### A.5 Master 的四种 update（preload→active 的触发源）
+
+RM **Table 244** 前文列出 **Master timer** 的 **4 种 update 选项**（意译编号）：
+
+1. **软件立即 update**：写 **`HRTIM_CR2` 的 `MSWU=1`**；**任何挂起的硬件 update 请求被取消**。
+2. **Master roll-over 且 Master repetition=0**：由 **`HRTIM_MCR` 的 `MREPU=1`** 使能。
+3. **Burst DMA 完成一次**：**`BRSTDMA[1:0]=01`** 于 `HRTIM_MCR`；可与 `MREPU` 同时为 1。RM **Note**：若 **`SWU`** 置位为强制 update 模式，可在 burst 序列 **刚结束立刻** update；若 `SWU` 为 0，则 **在 burst 结束后的下一次 update 事件**才 update。
+4. **Burst DMA 完成后紧跟的一次 Master roll-over**：**`BRSTDMA[1:0]=10`**。
+
+**Master update 可触发中断/DMA**（RM 原句）：Master update 事件可配 **中断或 DMA**。
+
+**Table 244 列出的 Master 可预载寄存器（RM）**：`HRTIM_DIER`、`HRTIM_MPER`、`HRTIM_MREP`、`HRTIM_MCMP1R`..`MCMP4R`（在 **`HRTIM_MCR` 的 `PREEN=1`** 时走 preload 机制）；update 源可为 **软件 / repetition / burst DMA / repetition following burst DMA**。
+
+**Timer x（A..F）** 另有更多 update 源（**软件、本定时器 repetition、本定时器 reset、burst DMA、其它定时器或 Master 的 update、`hrtim_upd_en` 等**），仍以 RM Table 244 为准在 Cube 里逐项对齐。
+
+### A.6 `MUDIS` / `TxUDIS`：多寄存器批量改表的标准节奏（RM 原流程）
+
+RM 在 **§28.3.11** 写明（意译，保留关键句）：
+
+- **`MUDIS` 与各 `TxUDIS` 位在 `HRTIM_CR1`**：可 **暂时禁止** “从 preload 到 active 的转移”，**无论**当前选定的 update 事件是什么；用于 **跨多个定时器改多个寄存器**；**清 0 这些位后**，在下一次合法 update 事件上 **恢复** preload→active。
+
+**RM 给出的第一个范例（Master + TIMB + TIMC 同步）**：
+
+- `HRTIM_MCR`：`MREPU=1` → **在 Master repetition 周期末尾** update；
+- `HRTIM_TIMBCR`、`HRTIM_TIMCCR`：置 **`MSTU`** → **TIMB/TIMC 与 Master 同时 update**；
+- 软件改表前：置 **`MUDIS`、`TBUDIS`、`TCUDIS`** → 此后 **硬件 update 请求被忽略**，可安全写 preload；
+- 改完后：**清 `MUDIS`、`TBUDIS`、`TCUDIS`** → **下一次 Master repetition 事件** 上 **一次性** 把各定时器 preload 转入 active。
+
+**第二个范例（TIMA 驱动 TIMD/TIME）** 同理，用 **`TAUDIS`、`TDUDIS`、`TEUDIS`** 与 **TIMA repetition** 配对（RM 原段落）。
+
+**给四路 Chirp 的直接建议**：把 **Master `MREPU` + TIMC/TIM `MSTU` + `MUDIS/TCUDIS/TDUDIS`** 当作 **“同一时刻换 4 路频率/脉宽”** 的默认答案；ISR **只推进 RAM 索引**，**不写 active**。
+
+### A.7 Crossbar 基本规则（SET/RESET 源）
+
+**语义（RM）**：**Set** → 输出 **active** 边沿；**Reset** → **inactive**。**极性**由 `OUTxR` 的 `POLx` 定义（正极性时 active=逻辑 1）。
+
+**每路输出两个 32 位寄存器**：`HRTIM_SETxyR`、`HRTIM_RSTxyR`（`x`=A..F，`y`=1/2）。**最多 32 个事件 OR 在一起**；**同一事件既选 set 又选 reset → 输出 toggle**。
+
+**1 个 tHRTIM 内多次 toggle（RM）**：**不允许**；同一周期内两次 toggle **只认第一次**。
+
+**软件强制（RM）**：`SETxyR`/`RSTxyR` 里的 **SST/SRT** 可在 **计数器未使能**时用于 **预置输出**；crossbar 的 set/reset 在 **`TxCEN` 置位后**才生效（**软件强制例外**用于上电对齐）。
+
+### A.8 “Greater than” compare（`GTCMP1`/`GTCMP3`）— Chirp 慎用
+
+RM **§28.3.12** 说明：对 **CMP1/CMP3 作为 RESET** 的配置，可开 **“greater than”** 模式（`HRTIM_TIMxCR2` 的 `GTCMPx`）以实现 **周期内尽早** 改占空比。
+
+**致命交互（RM 原句，意译）**：当 **`GTCMPx=1`** 时，**对应 compare 寄存器的 preload 机制被关闭**（**无论 `PREEN` 是否为 1**），写入会 **尽快** 影响比较器逻辑。
+
+**给 Chirp 的结论**：需要 **每周期边界批量换 PER/CMP** 时，**不要**对参与换表的 compare 开 `GTCMPx`，否则 **失去“影子寄存器在同一 update 生效”** 的保证，极易出现 **半周期毛刺**。
+
+### A.9 输出级：RUN / IDLE / FAULT 与 `OEN`/`ODIS`（RM §28.3.14）
+
+**三态（RM）**：**RUN**（crossbar 控制 active/inactive）；**IDLE**（复位后默认、软件 ODIS、burst idle 等）；**FAULT**（故障输入等）。
+
+**关键位（RM）**：`HRTIM_OENR` 的 **`TxyOEN`** 为 **控制兼状态**：软件写 1 进入 RUN；**硬件在回到 IDLE/FAULT 时清 0**。`HRTIM_ODSR` 的 **`TxyODS`** 指示 IDLE 还是 FAULT。`HRTIM_ODISR` 的 **`TxyODIS`** 用于 **软件关断** 到 IDLE。
+
+**优先级（RM）**：**IDLE 优先于 FAULT**（即使在 fault 仍有效时，**置 `ODIS` 仍可进 IDLE**）。**FAULT 优先于 RUN**（fault 配置使能且条件满足时，**即使同时写 OEN 也会进 FAULT**）。
+
+**IDLE 电平**：`OUTxR` 的 **`IDLESx`**：0=idle 时为 **inactive** 电平；1=idle 时为 **active** 电平。
+
+**上电预置（RM 原句）**：在进入 RUN（`TxyOEN=1`）前，可用 **`HRTIM_SETx1R`/`HRTIM_RSTx1R`（软件强制位）** 预置输出电平；**一旦 `TxyOEN=1`，输出立即接到 crossbar**（若此时计数器时钟停，电平取决于复位后初态或“停振且输出关闭时的 RUN 电平”——调试时需对照 `ODSR`）。
+
+**停机顺序的工程推荐（正文 §2.3 与附录一致）**：**先 `ODIS`（进 IDLE，电平由 `IDLESx` 定义）→ 再停 `MCEN`/`TxCEN` → 再关中断使能**。这与 RM 状态图 **“IDLE entry: Software (ODIS)”** 一致。
+
+### A.10 DLL 就绪标志（与启动顺序）
+
+RM 要求 DLL **校准完成**后再依赖 HR 边沿；实现上在 **`HRTIM_ISR` 的 `DLLRDY`** 置位后再启动波形（与 ST LL 例程一致）。具体配置位见 **`HRTIM_DLLCR`**（`CAL`、`CALEN`、`CALRTE` 等）。
+
+### A.11 Burst mode 控制器（可选“硬件 idle 段”）
+
+RM **§28.3.15**：burst 控制器可在 **RUN 与 IDLE** 间按 **BMCMP/BMPER** 插入 **空闲段**；**idle/run 对齐**可选用 **Master 或 TIMA..E 的 reset/roll-over** 作为 burst 计数时钟（`BMCLK` 0000–0101）。这与 “用 repetition 自动停” **不是同一机制**；若要用 burst 做 **精确 N 个 run 段**，需单独按 RM 配 **触发源、BMOM 连续/单次、IDLEM/IDLES** 等，调试复杂度高，**四路 Chirp 首版不建议与表驱动混为第一条路径**。
+
+---
+
+**文档版本**：与工作区 `docs/rm0440_hrtim_g474_notes.txt`、`test_plan/hrtim_phased_tests.txt` 同步演进；若实现与本文冲突，以 **示波器事实 + RM0440** 为准。无法读 PDF 时，以 **§附录 A** 为 RM 细节权威副本。
