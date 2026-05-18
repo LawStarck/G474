@@ -1,6 +1,10 @@
 RM0440 (STM32G4) — HRTIM 与 G474 要点摘录（用于本仓库测试方案）
 来源: RM0440 Rev 9 第 28 章 High-resolution timer（本地由 ST 官方 PDF 抽取）。
 
+【扩展阅读】四路 Chirp / Timer C+D / CubeMX / 中断边界（给 Cursor 的主文档）：
+  docs/hrtim_four_channel_chirp_guide.md
+
+--------------------------------------------------------------------
 1) Master timer 定位（§28.3.5）
    - 无专用引脚输出；通过各定时单元（TIMA..F）的 set/reset crossbar，用 Master 的
      PER / CMP1..4 / SYNC / REP 事件去驱动从定时器输出。
@@ -9,11 +13,11 @@ RM0440 (STM32G4) — HRTIM 与 G474 要点摘录（用于本仓库测试方案�
 
 2) 重复计数器（§28.3.4 “Repetition counter”）
    - 使能时（TxCEN/MCEN 置位）从 HRTIM_REPxR / MREP 装载内部重复计数器。
-   - 连续模式下每次计数器 roll-over（到 PER 后回 0）或 reset 事件时递减一次。
+   - 连续模式下每次计数器 roll-over（到 PER 后回 0）或 reset 事件，重复计数器递减。
    - 当内部值到 0 时产生 REP 中断/DMA（若使能）。
    - 关键公式：HRTIM_REPxR = 0 → 每个周期一次 REP 事件；若值 > 0，则每
      (HRTIM_REPxR + 1) 个周期产生一次 REP 事件。
-     因此固定产生 100 个 Master 周期后的一次 REP 中断：写 MREP = 99（全程不改）。
+     例：固定 100 个 Master 周期后产生一次 REP 事件 → MREP = 99（burst 期间勿改 MREP）。
 
 3) Roll-over 与“杂波”风险（§28.3.4）
    - 若启动时计数初值已大于 PER，或运行中把 PER 改小到小于当前计数且未正确复位，
@@ -27,9 +31,21 @@ RM0440 (STM32G4) — HRTIM 与 G474 要点摘录（用于本仓库测试方案�
 5) 输出级 idle / 无 glitch 启停（§28.3.14 摘录）
    - 进入 RUN（OEN）前可用 SETx/RSTx 寄存器中的软件强制位预置电平。
    - 结束时用 ODISR 按通道关闭输出回到 idle，再配合清除 MCEN/TDCEN 等停止计数。
+   - 注意：REP 事件本身不自动关断输出；若要“硬件化”收尾，可考虑 REP→DMA 写 ODIS/CEN。
 
-6) NUCLEO-G474RE 参考连脚（与 ST 例程 HRTIM_Basic_PWM_Master 一致）
+6) 预载与多寄存器更新（Table 244 及后续“Update propagation”）
+   - Master 可用 MREPU 等位选择“在 repetition 边界”把 preload 转入 active。
+   - 多定时器同时改表：RM 示例使用 MUDIS、TBUDIS、TCUDIS… 冻结 update，写完再放开，
+     避免同一周期内部分寄存器已生效、部分未生效的“拼接毛刺”。
+   - 从定时器若跟随 Master update（MSTU 等），注意 RSYNCU：相邻定时器来的 update
+     可立即生效或重同步到 roll-over，需按 Chirp 需求显式配置。
+
+7) NUCLEO-G474RE 参考连脚（与 ST 例程 HRTIM_Basic_PWM_Master 一致）
    - HRTIM1 TD2 → PB15，AF13（示波器测“随 Master PER/CMP1 的 PWM”）。
+   - 四路时请按数据手册为 TC1/TC2/TD1/TD2 选择引脚与 AF。
 
-7) PDF 链接（官方）
+8) PDF 链接（官方）
    https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
+
+9) STM32CubeG4 官方例程（本地随包路径因版本而异）
+   - 检索关键字：HRTIM_Basic_PWM_Master、HRTIM、DMA、burst、preload、repetition。
